@@ -1,9 +1,9 @@
-﻿using System.IO;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 
 // Discord namespaces
 using Discord;
 using Discord.WebSocket;
+using Discord.Commands;
 
 class Program
 {
@@ -14,7 +14,12 @@ class Program
 
 	public async Task MainAsync()
 	{
-		_client = new DiscordSocketClient();
+		var config = new DiscordSocketConfig() 
+		{
+			GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent
+		};
+
+		_client = new DiscordSocketClient(config);
 
 		_client.Log += Log;
 
@@ -24,6 +29,13 @@ class Program
 			.AddJsonFile(settingsPath, optional: false, reloadOnChange: true)
 			.Build();
 		var botToken = configuration.GetSection("botCredentials:token").Value;
+
+		// Create instances of CommandService and CommandHandler
+		var commands = new CommandService();
+		var commandHandler = new CommandHandler(_client, commands);
+
+		// Install and set up command handling
+		await commandHandler.InstallCommandsAsync();
 
 		// Start Bot
 		await _client.LoginAsync(TokenType.Bot, botToken);
