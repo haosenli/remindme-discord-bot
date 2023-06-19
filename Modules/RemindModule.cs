@@ -1,41 +1,66 @@
+using Discord;
 using Discord.Commands;
-using ReminderUtilities;
+using System.Text.Json;
+using System.Text;
+using Newtonsoft.Json;
 
 public class RemindModule : ModuleBase<SocketCommandContext>
 {
-    private ReminderQueue reminders;
+    private static readonly HttpClient sharedHttpClient = new()
+	{
+		BaseAddress = new Uri("http://localhost:5149"),
+	};
 
     public RemindModule()
     {
-        reminders = new ReminderQueue();
+		Task.Run(() => StartReminders());
     }
 
-	[Command("rmdstart", RunMode = RunMode.Async)]
-    [Summary("Starts the reminder function.")]
-	public void StartReminders()
-	{
-		// Timer object to periodically call CheckRemindersAsync
-		System.Timers.Timer reminderTimer = new System.Timers.Timer(5000);
-        reminderTimer.Elapsed += async (sender, e) => await CheckRemindersAsync();
-        reminderTimer.Start();
-	}
+	public async Task StartReminders()
+    {
+        TimeSpan interval = TimeSpan.FromSeconds(1);
+        CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
 
-	
-	[Command("checkrmd")]
+        try
+        {
+            while (!cancellationTokenSource.Token.IsCancellationRequested)
+            {
+                await CheckRemindersAsync();
+                // Delay for the specified interval
+                await Task.Delay(interval, cancellationTokenSource.Token);
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // Task was canceled, no further action needed
+        }
+    }
+
     [Summary("Runs the reminder function.")]
     private async Task CheckRemindersAsync()
     {
 		// Run until all current and past reminders are cleared out.
-		Reminder? reminder = reminders.peekReminder();
-
-		Console.WriteLine(reminder);
-		while (reminder != null && reminder.utcTime <= DateTime.UtcNow) {
-			Console.WriteLine("here2");
-			// Send reminder
-			string msg = $"<@{reminder.authorId}> {reminder.messageContent}";
-			await reminder.messageChannel.SendMessageAsync(msg);
-			// Get new reminder
-			reminder = reminders.peekReminder();
+		HttpResponseMessage response = await sharedHttpClient.GetAsync("peek-reminder");
+		var jsonResponse = await response.Content.ReadAsStringAsync();
+		var responseBody = JsonConvert.DeserializeObject<Dictionary<string, string>>(jsonResponse);
+		while (responseBody != null && 
+			   responseBody.ContainsKey("utcTime") && 
+			   DateTime.Parse(responseBody["utcTime"]) <= DateTime.UtcNow) 
+		{
+			// Process response body
+			var msg = $"<@{responseBody["authorId"]}> {responseBody["messageContent"]}";
+			var messageGuildId = ulong.Parse(responseBody["messageGuildId"]);
+			var messageChannelId = ulong.Parse(responseBody["messageChannelId"]);
+			var messageChannel = Context.Client.GetChannel(messageChannelId);
+			
+			// Send message for reminder
+			await Context.Client.GetGuild(messageGuildId).GetTextChannel(messageChannelId).SendMessageAsync(msg);
+			
+			// Remove and process next reminder
+			response = await sharedHttpClient.GetAsync("pop-reminder");
+			response = await sharedHttpClient.GetAsync("peek-reminder");
+			jsonResponse = await response.Content.ReadAsStringAsync();
+			responseBody = JsonConvert.DeserializeObject<Dictionary<string, string>>(jsonResponse);
 		}
     }
     
@@ -43,8 +68,16 @@ public class RemindModule : ModuleBase<SocketCommandContext>
     [Summary("Creates a reminder.")]
     public async Task AddReminder([Remainder] string message)
     {
-		Console.WriteLine("new reminder added");
-        reminders.addReminder(Context.Message);
-		Console.WriteLine(reminders.peekReminder());
+		using StringContent jsonContent = new(
+			System.Text.Json.JsonSerializer.Serialize(new {
+				authorId = Context.Message.Author.Id.ToString(),
+				messageGuildId = Context.Guild.Id.ToString(),
+				messageChannelId = Context.Message.Channel.Id.ToString(),
+				messageContent = message
+			}),
+			Encoding.UTF8,
+			"application/json");
+
+		using HttpResponseMessage response = await sharedHttpClient.PostAsync("add-reminder", jsonContent);
     }
 }
